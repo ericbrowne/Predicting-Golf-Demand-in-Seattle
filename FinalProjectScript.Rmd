@@ -1,0 +1,278 @@
+---
+title: 'Final Project: Relationship between Gun Applications and Mass Shootings'
+author: "Eric Browne"
+date: "3/15/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggpubr)
+library(hexView)
+library(aod)
+library(survey)
+library(lmtest)
+library(sandwich)
+library(ggplot2)
+library(MASS)
+library(estimatr)
+options(scipen=999)
+```
+
+## DATA CLEANING AND IMPORTING
+```{r}
+#First, lets import the data set from Eviews:
+golfdata<-readEViews("golfdata_editedv2.wf1", as.data.frame = TRUE)
+golfdata
+#Filter out Date, Average fee, Month, Course
+#golfdata<-select(golfdata,-Date,-AVEFEE)
+
+
+```
+##Run our initial OLS Regressions
+```{R}
+#First Linear Regression:
+#Use this for unrestricted
+view(golfdata)
+#MGS*FEESUB,  MGS*FEE,   
+unrestricted<-lm(ROUNDS ~ FEE + MGS:FEE +I(FEE^2) + WINTER:FEE + FEESUB + FEESUB:MGS + RATING + SLOPE + WINTER + RAIN +I(RAIN^2)+ TEMP + I(TEMP^2) + CART:WINTER + DISTANCE + YARD + RANGE, data=golfdata)
+summary(unrestricted)
+
+
+```
+
+
+
+
+
+
+##Now use F-Wald test(s) and Auxillary Regression
+
+```{r}
+#Use package "aod"
+#Use F-Wald test to throw variables out
+
+
+
+#Variables with high P values: 13: yard, 14: range, 16: winter:fee, 
+ftest_yard<-wald.test(b=coef(unrestricted),Sigma=vcov(unrestricted),Terms = 13)
+ftest_yard
+ftest_range<-wald.test(b=coef(unrestricted),Sigma=vcov(unrestricted),Terms = 14) 
+ftest_range
+ftest_winterfee<-wald.test(b=coef(unrestricted),Sigma=vcov(unrestricted),Terms = 16)
+ftest_winterfee
+
+
+
+#Restrict the Model by taking out: YARD, RANGE, WINTER:FEE
+restricted_final<-lm(ROUNDS ~ FEE + MGS:FEE +I(FEE^2) + FEESUB + FEESUB:MGS + RATING + SLOPE + WINTER + RAIN +I(RAIN^2)+ TEMP + I(TEMP^2) + CART:WINTER + DISTANCE,data=golfdata)
+summary(restricted_final)
+
+
+#Now make a new dataset from the restricted regression model:
+golfdata_restrict<-select(golfdata,-Date,-AVEFEE,-MONTH,-COURSE,-YARD,-RANGE)
+
+
+
+
+#Do auxiliary regression of residuals against explanatory variables on unrestriced model
+    #Then test against a Chi SQ critical value and test stat:
+aux_regr_resid<-restricted_final$residuals
+aux_regr<-lm(aux_regr_resid ~ FEE + MGS:FEE +I(FEE^2) + WINTER:FEE + FEESUB + FEESUB:MGS + RATING + SLOPE + WINTER + RAIN +I(RAIN^2)+ TEMP + I(TEMP^2) + CART:WINTER + DISTANCE + YARD + RANGE, data=golfdata)
+summary(aux_regr)
+
+#Now lets see if we can in fact throw out those three variables: YARD, RANGE, WINTER:FEE:
+
+#Compute Test Stat of Chi-sq Distribution::::  n*R^2
+aux_teststat<-(0.0006636*264) #0.1751904
+aux_critval<-qchisq(0.95,df=3)
+
+cat("Our Chi-sq test statistic is:",aux_teststat, "with critical value:",aux_critval)
+print("")
+print("Because our test stat is less than the critical value, we fail to reject the Null: that we are in fact able to pull out these three variables.")
+
+
+
+
+
+```
+
+
+##Check For Heterskedasticity
+```{r}
+#First, lets plot the residuals:
+residuals<-restricted_final$residuals
+fittedvalues<-restricted_final$fitted.values
+fittedvalues
+fit<-lm(golfdata$ROUNDS~fittedvalues)
+summary(fit)
+resid_plot<-ggplot(data=golfdata_restrict,aes(y=residuals,x=fittedvalues))+geom_point(col='blue')+geom_abline(aes(x=fittedvalues,y=golfdata$ROUNDS),intercept=0,slope=0,col='red',size=0.75)+xlab('Fitted Values for ROUNDS')+ylab("Residuals")+ggtitle("Residuals vs Fitted Values for ROUNDS:  Pre-Adjustment")+theme(panel.background = element_rect(fill='grey',colour='black'))
+resid_plot
+resid_plot2<-ggplot(data=golfdata_restrict,aes(y=ROUNDS,x=fittedvalues))+geom_point(col='blue')+geom_abline(aes(x=fittedvalues,y=golfdata$ROUNDS),intercept=0,slope=1,col='red',size=0.75)+xlab('Fitted Values for ROUNDS')+ylab("Observed ROUNDS")+ggtitle("Observed ROUNDS vs Fitted Values for ROUNDS:  Pre-Adjustment")+theme(panel.background = element_rect(fill='grey',colour='black'))
+resid_plot2
+
+
+#Use the Breusch-Pagan test:
+
+#Because our P value is extremely low (< 0.05), we can reject the null hypothesis that Heteroskedasticity is not present; because it is in fact present.
+bptest<-bptest(restricted_final)
+bptest
+
+
+```
+
+##Adjust Standard Errors for Homoskedasticity
+
+```{r}
+
+
+#coefficient test using 3 different methods of Adjusting the Standard Errors:
+coefftest<-coeftest(restricted_final, vcov = vcovHC(restricted_final, "HC0"))
+robusttest<-lm_robust(ROUNDS ~ FEE + MGS:FEE +I(FEE^2) + FEESUB + FEESUB:MGS + RATING + SLOPE + WINTER + RAIN +I(RAIN^2)+ TEMP + I(TEMP^2) + CART:WINTER + DISTANCE,se_type="HC0",data=golfdata)
+
+summary(robusttest)
+coefftest
+
+#The coefficients on the coefficient t test and robust lm summary match up
+fittedvalues_robust<-robusttest$fitted.values
+robustdata<-data.frame(ROUNDS=golfdata$ROUNDS,fittedvalues_robust)
+
+resid_plot_robust<-ggplot(data=robustdata,aes(y=resid_robust,x=fittedvalues_robust))+geom_point(col='purple')+geom_abline(intercept=0,slope=0,col='red',size=0.75)+xlab('Fitted Values for ROUNDS')+ylab("Residuals")+ggtitle("Residuals vs Fitted Values for ROUNDS:  Pre-Adjustment")+theme(panel.background = element_rect(fill='grey',colour='black'))
+resid_plot_robust
+
+#Now plot after adjustment:
+robust_plot<-ggplot(data=robustdata,aes(y=ROUNDS,x=fittedvalues_robust))+geom_point(col='purple')+geom_abline(intercept=0,slope=1,col='red',size=0.75)+xlab('Fitted Values for ROUNDS')+ylab("Residuals")+ggtitle("Residuals vs Fitted Values for ROUNDS:  Post-Adjustment")+theme(panel.background = element_rect(fill='grey',colour='black'))
+robust_plot
+resid_plot2
+
+robusttest$fitted.values
+restricted_final$fitted.values
+
+summary(robusttest)
+summary(restricted_final)
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+###Initial/Introduction Plots:
+```{r}
+#Make subsets
+course1<-golfdata[c(1:12), ]
+course2<-golfdata[c(13:24), ]
+course3<-golfdata[c(25:36), ]
+course4<-golfdata[c(37:48), ]
+course5<-golfdata[c(49:60), ]
+course6<-golfdata[c(61:72), ]
+course7<-golfdata[c(73:84), ]
+course8<-golfdata[c(85:96), ]
+course9<-golfdata[c(97:108), ]  #MGS
+course10<-golfdata[c(109:120), ] #MGS
+course11<-golfdata[c(121:132), ]
+course12<-golfdata[c(133:144), ]
+course13<-golfdata[c(145:156), ]
+course14<-golfdata[c(157:168), ]
+course15<-golfdata[c(169:180), ]
+course16<-golfdata[c(181:192), ]
+course17<-golfdata[c(193:204), ]
+course18<-golfdata[c(205:216), ]
+course19<-golfdata[c(217:228), ]
+course20<-golfdata[c(229:240), ]
+course21<-golfdata[c(241:252), ]  #MGS
+course22<-golfdata[c(253:264), ]
+
+
+#Most expensive courses were Course 8 and 14
+
+#Amount of rounds of golf played
+roundsplot<-ggplot(data=golfdata,aes(x=MONTH,y=ROUNDS))+geom_point(col='black')+geom_line(data=course9,col='purple',size=1.25)+geom_line(data=course10,col='blue',size=1.25)+geom_line(data=course21,col='red',size=1.25)
+roundsplot<-roundsplot + theme(panel.background = element_rect(fill='grey', colour='black'))
+
+roundsplot<-roundsplot+theme(panel.grid.major = element_line(linetype = 'blank'))
+roundsplot<-roundsplot+ggtitle("The Number of Rounds played each month for each Golf Course")
+roundsplot<-roundsplot + xlab("Month: January-December")+ylab("Total Rounds Played")
+roundsplot<-roundsplot + geom_line(data=course8, col='yellow',size=1)
+roundsplot<-roundsplot + geom_line(data=course14,col='yellow',size=1)
+roundsplot
+
+#Does not matter which subset you use for data because each month is the same for each course:
+#Average amount of rain per month:
+rainplot<-ggplot(data=course1,aes(x=MONTH,y=RAIN))+geom_point(col='red',size=3)+geom_line(col='blue',size=1.25)+ggtitle("The Average amount of Rain Each Month in Inches")+xlab("Month: January-December")+ylab("Average Rain (inches)")
+rainplot<-rainplot + theme(panel.grid.major = element_line(linetype = "blank")) + theme(panel.background = element_rect(fill = 'grey',colour='black'))
+rainplot
+
+#Average Temperature per month:
+tempplot<-ggplot(data=course1,aes(x=MONTH,y=TEMP))+geom_point(col='red',size=3)+geom_line(col='purple',size=1.25)+ggtitle("The Average Temperature in Degrees Farenheit")+xlab("Month: January-December")+ylab("Average Temp (F)")
+tempplot<-tempplot + theme(panel.grid.major = element_line(linetype = 'blank'))+theme(panel.background = element_rect(fill='grey',colour='black'))
+tempplot
+
+
+#Average Fee per month:
+feeplot<-ggplot(data=golfdata,aes(x=MONTH,y=FEE))+geom_point(col='black')+geom_line(data=course9,col='purple')+geom_line(data=course10,col='blue')+geom_line(data=course21,col='red')+ggtitle("The Average Fee for each Course in each Month in U.S. Dollars")+xlab("Month: January-December")+ylab("Average Fee ($$)")
+feeplot<-feeplot + theme(panel.grid.major = element_line(linetype = 'blank'))+theme(panel.background = element_rect(fill='grey',colour='black'))
+feeplot<-feeplot+geom_line(data=course8,col='yellow',size=1)
+feeplot<-feeplot+geom_line(data=course14,col='yellow',size=1)
+
+
+
+ratingsubset<-data.frame(golfdata[c(1,13,25,37,49,61,73,85,97,109,121,133,145,157,169,181,193,205,217,229,241,253), ])
+
+#rating plot
+ratingplot<-ggplot(data=ratingsubset,aes(x=COURSE,y=RATING))+geom_point(aes(x=COURSE,y=RATING),col='red',data=ratingsubset)+geom_line()+ggtitle("The Ratings for each Course")+xlab("The Course Number:     MGS = 9, 10, 21")+ylab('Rating for Each Course')
+ratingplot<-ratingplot + theme(panel.grid.major = element_line(linetype = 'blank'))+theme(panel.background = element_rect(fill='grey',colour='black'))
+
+
+
+#Slope Plot:
+slopesubset<-data.frame(golfdata[c(1,13,25,37,49,61,73,85,97,109,121,133,145,157,169,181,193,205,217,229,241,253), ])
+slopeplot<-ggplot(data=slopesubset,aes(x=COURSE,y=SLOPE))+geom_point(aes(x=COURSE,y=SLOPE),col='red',data=ratingsubset)+geom_line()+ggtitle("The Slope for each Course")+xlab("The Course Number:     MGS = 9, 10, 21")+ylab('Slope for Each Course')
+slopeplot<-slopeplot + theme(panel.grid.major = element_line(linetype = 'blank'))+theme(panel.background = element_rect(fill='grey',colour='black'))
+
+roundsplot
+feeplot
+ratingplot
+slopeplot
+tempplot
+
+
+
+#Temp^2 Plot:
+
+tempsqplot<-ggplot(data=golfdata,aes(x=I(TEMP^2),y=ROUNDS))+geom_point(col='blue')+ggtitle("The Average Temperature Squared VS. the Amounf of ROUNDS played") + ylab("Rounds played")
+tempsqplot<-tempsqplot + theme(panel.grid.major = element_line(linetype = 'blank'))+theme(panel.background = element_rect(fill='grey',colour='black'))
+tempsqplot<-tempsqplot + geom_abline(data=golfdata,intercept = -4258,slope=2.431,col='red' )
+tempsqplot
+
+#rain^2 plot:
+rainsqplot<-ggplot(data=golfdata, aes(x=I(RAIN^2),y=ROUNDS))+ geom_point(col='blue')+ggtitle("Averate Rainfall Squared vs ROUNDS played")
+rainsqplot<-rainsqplot + theme(panel.background = element_rect(fill = 'grey', colour = 'black'))
+rainsqplot
+
+
+#Feesq plot
+feesqplot<-ggplot(data=golfdata, aes(x=ROUNDS,y=I(FEE^2)))+geom_point(col='blue')+ggtitle("FEE Squared VS. ROUNDS")+theme(panel.background = element_rect(fill = 'grey', colour = 'black'))+geom_abline(intercept=-4258,slope=-5.113)
+feesqplot
+
+
+
+```
+
+
+
